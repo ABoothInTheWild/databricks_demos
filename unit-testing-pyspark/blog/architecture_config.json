@@ -1,0 +1,14 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontSize": "16px",
+    "fontFamily": "ui-sans-serif, system-ui, -apple-system, sans-serif"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "padding": 24,
+    "nodeSpacing": 60,
+    "rankSpacing": 80,
+    "htmlLabels": true
+  }
+}

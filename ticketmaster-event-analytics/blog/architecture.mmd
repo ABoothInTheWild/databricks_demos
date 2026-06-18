@@ -1,0 +1,37 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#2D3F55",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#4A5F7A",
+    "lineColor": "#8A9BB0",
+    "background": "#FFFFFF",
+    "edgeLabelBackground": "#FFFFFF",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "15px"
+  },
+  "flowchart": {
+    "padding": 30,
+    "nodeSpacing": 36,
+    "rankSpacing": 48,
+    "curve": "basis",
+    "htmlLabels": true
+  }
+}}%%
+flowchart LR
+
+    A["SOURCE<br/>─────────────<br/><b>Ticketmaster<br/>Discovery API</b><br/>events · venues<br/>attractions<br/>classifications"]
+    B["STORAGE<br/>─────────────<br/><b>UC Volume</b><br/>raw JSON<br/>date-partitioned"]
+    C["INGEST<br/>─────────────<br/><b>Auto Loader</b><br/>batch · bronze<br/>*_raw tables<br/>VARIANT schema"]
+    D["SILVER<br/>─────────────<br/><b>Refine</b><br/>typed fields<br/>MD5 keys<br/>RELY PK/FK<br/>bridge explode"]
+    E["GOLD<br/>─────────────<br/><b>Star Schema</b><br/>dim_date · dim_venue<br/>dim_attraction<br/>dim_classification<br/>fact_events<br/>bridge_event_attractions"]
+    F["CONSUME<br/>─────────────<br/><b>Analytical Views</b><br/>by venue<br/>by attraction<br/>monthly trends"]
+
+    A --> B --> C --> D --> E --> F
+
+    style A fill:#FF6B35,color:#FFFFFF,stroke:#C84E18,stroke-width:2px
+    style B fill:#1E2D40,color:#FFFFFF,stroke:#FF6B35,stroke-width:3px
+    style C fill:#0194E2,color:#FFFFFF,stroke:#0178C0,stroke-width:2px
+    style D fill:#2D3F55,color:#FFFFFF,stroke:#4A5F7A,stroke-width:2px
+    style E fill:#5B3FA6,color:#FFFFFF,stroke:#3E2A75,stroke-width:2px
+    style F fill:#1E7E6B,color:#FFFFFF,stroke:#155D4E,stroke-width:2px

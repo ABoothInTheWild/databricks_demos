@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test Your PySpark Like Real Software: pytest, Fixtures, and Databricks Connect</title>
+<meta name="description" content="Separate the math from the Spark, test both locally before they hit production, and run the exact same suite on your laptop, in a notebook, and in CI.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Test Your PySpark Like Real Software: pytest, Fixtures, and Databricks Connect">
+<meta property="og:description" content="Separate the math from the Spark, test both locally before they hit production, and run the exact same suite on your laptop, in a notebook, and in CI.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/unit-testing-pyspark/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Test Your PySpark Like Real Software: pytest, Fixtures, and Databricks Connect","description":"Separate the math from the Spark, test both locally before they hit production, and run the exact same suite on your laptop, in a notebook, and in CI.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>Test Your PySpark Like Real Software: pytest, Fixtures, and Databricks Connect</h1><p><em>Separate the math from the Spark, test both locally before they hit production, and run the exact same suite on your laptop, in a notebook, and in CI.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Most data bugs don't announce themselves. A rounding step goes missing, an aggregation drops a column, an edge case divides by zero, and nobody notices until a dashboard is quietly wrong a week later. The fix isn't heroics. It's the thing application engineers have done for decades: write tests, run them before you ship.</p>
+<p>This demo shows how to do that properly for PySpark with <a href="https://docs.pytest.org/en/stable/">pytest</a> and <a href="https://docs.databricks.com/en/dev-tools/databricks-connect/index.html">Databricks Connect</a>. The example domain is baseball stats (batting average, OPS, ERA, WHIP) because the math is familiar and the edge cases are obvious. The domain is incidental, though. Swap in marketing metrics, financial ratios, or supply-chain KPIs, and the structure is identical. What matters is the pattern.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/unit-testing-pyspark/blog/architecture.png" alt="Architecture"></figure>
+<h2>The key move: separate the math from the Spark</h2>
+<p>The whole approach rests on one decision. Keep your domain logic in plain Python functions, and keep your Spark transformations thin. Here's a pure function and the Spark transform that uses the same idea:</p>
+<pre><code>def batting_average(hits: int, at_bats: int) -&gt; float:
+    if at_bats == 0:            # the edge case that bites in production
+        return 0.0
+    return round(hits / at_bats, 3)
+
+def add_batting_average(df: DataFrame) -&gt; DataFrame:
+    return df.withColumn("batting_avg",
+        F.when(F.col("at_bats") == 0, 0.0)
+         .otherwise(F.round(F.col("hits") / F.col("at_bats"), 3)))</code></pre>
+<p>The math lives where it's cheap to test. The Spark code is a thin shell around it.</p>
+<h2>Layer one: pure-Python tests that run in milliseconds</h2>
+<p>Pure functions require no Spark at all, so they test instantly. This is your fastest feedback loop: break the formula, and you know before the kettle boils.</p>
+<pre><code>def test_normal_calculation(self):
+    assert batting_average(150, 500) == 0.300
+
+def test_zero_at_bats_returns_zero(self):
+    assert batting_average(0, 0) == 0.0   # no crash, no NaN</code></pre>
+<p>Twenty-five of these run in about a tenth of a second.</p>
+<h2>Layer two: Spark tests over Databricks Connect</h2>
+<p>The transformations need a real SparkSession, so those tests run against Databricks via Connect. They build a tiny, known DataFrame, run the transform, and assert on the result.</p>
+<pre><code>def test_correct_calculation(self, sample_batting_df):
+    result = add_batting_average(sample_batting_df)
+    trout = result.filter(result.player == "Mike Trout").collect()[0]
+    assert trout.batting_avg == 0.327</code></pre>
+<p>Small, controlled data (six rows, not production tables) keeps them fast and deterministic.</p>
+<h2>The fixtures: set up once, inject everywhere</h2>
+<p>This is the heart of pytest. A session-scoped <a href="https://docs.pytest.org/en/stable/how-to/fixtures.html">fixture</a> creates the Spark session once and shares it across all tests, so you pay the startup cost once, not per test.</p>
+<pre><code>@pytest.fixture(scope="session")
+def spark():
+    session = DatabricksSession.builder.serverless(True).getOrCreate()
+    yield session
+    session.stop()</code></pre>
+<p>Another fixture builds the sample DataFrame. Tests just declare <code>sample_batting_df</code> as an argument, and pytest wires it in. No imports, no boilerplate.</p>
+<h2>Run it everywhere</h2>
+<p>The same <code>tests/</code> directory runs three ways with no code changes: <code>pytest tests/ -v</code> from your laptop, <code>pytest.main([...])</code> in a notebook cell, and the identical command in a <a href="https://docs.github.com/en/actions">GitHub Actions</a> job. Thirty-nine tests, twenty-five pure-Python and fourteen Spark, pass in about nine seconds, and most of that is the one-time Spark session.</p>
+<pre><code>$ pytest tests/ -v
+...
+39 passed in 9.34s</code></pre>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/unit-testing-pyspark/blog/ss_pytest.png" alt="pytest tests/ — 39 passed"><figcaption><em>The whole suite runs locally: 25 pure-Python tests and 14 Spark tests, 39 passed in under nine seconds.</em></figcaption></figure>
+<h2>The point</h2>
+<p>Once the suite is green on six rows of fake data, you trust the same transforms on a billion real ones, because the logic is proven independent of scale. Change a formula and forget a rounding step, and the test fails immediately. Refactor an aggregation and drop a column; the test catches it before the dashboard does.</p>
+<p>The baseball is just a vessel. The reusable parts are split between pure logic and Spark, the session fixture, and the run-anywhere setup. Copy the <code>conftest.py</code>, replace the stat functions with your own domain, and you've got a testing template that turns "I think this works" into "the suite says it works."</p>
+<hr>
+<p><em>The full demo (the functions, the tests, and four explainer notebooks) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/unit-testing-pyspark"><code>unit-testing-pyspark</code></a> directory. The baseball stats are illustrative; the testing pattern is domain-agnostic.</em></p>
+</article></body></html>

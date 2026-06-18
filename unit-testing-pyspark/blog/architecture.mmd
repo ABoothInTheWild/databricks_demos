@@ -1,0 +1,31 @@
+flowchart LR
+    SRC["<b>baseball_stats.py</b><br/>pure-Python stat functions<br/>BA · OPS · ERA · WHIP<br/>+ thin Spark transforms"]
+
+    PURE["<b>Pure-Python tests</b><br/>25 tests · ~0.1s · no Spark"]
+
+    SPARK["<b>Spark DataFrame tests</b><br/>14 tests — via Databricks Connect"]
+
+    FIXTURES["<b>conftest.py fixtures</b><br/>session SparkSession + sample DataFrame"]
+
+    RESULT["<b>pytest tests/ -v</b><br/>39 passed in ~9s"]
+
+    TARGETS["<b>Runs identically:</b><br/>local · notebook · CI"]
+
+    SRC --> PURE
+    SRC --> SPARK
+    FIXTURES --> SPARK
+    PURE --> RESULT
+    SPARK --> RESULT
+    RESULT --> TARGETS
+
+    classDef orange fill:#FF6B35,stroke:#cc5528,color:#fff
+    classDef blue fill:#0194E2,stroke:#0177b5,color:#fff
+    classDef purple fill:#5B3FA6,stroke:#472f82,color:#fff
+    classDef teal fill:#1E7E6B,stroke:#175e51,color:#fff
+    classDef slate fill:#2D3F55,stroke:#1f2e3e,color:#fff
+
+    class SRC orange
+    class PURE,SPARK blue
+    class FIXTURES purple
+    class RESULT teal
+    class TARGETS slate

@@ -1,0 +1,33 @@
+flowchart LR
+    classDef source fill:#FF6B35,stroke:#cc4a15,stroke-width:2.5px,color:#ffffff
+    classDef ingest fill:#0194E2,stroke:#0175b0,stroke-width:2px,color:#ffffff
+    classDef zerobus fill:#1E7E6B,stroke:#145a4b,stroke-width:2px,color:#ffffff
+    classDef delta fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef process fill:#2D3F55,stroke:#4a6080,stroke-width:2px,color:#ffffff
+    classDef govern fill:#5B3FA6,stroke:#3d2a75,stroke-width:2px,color:#ffffff
+    classDef converge fill:#1E7E6B,stroke:#145a4b,stroke-width:2.5px,color:#ffffff
+
+    SRC(["Casino gaming events<br/>(~500 event types)"]):::source
+
+    subgraph PATHA["  Path A — Structured Streaming  "]
+        direction TB
+        AL["Auto Loader<br/>(cloudFiles)"]:::ingest
+        BR[["Delta · bronze<br/>slot_events_raw"]]:::delta
+        TR["Silver transforms<br/>(cast · tier · net_outcome)"]:::process
+        SG[["Delta · silver / gold<br/>slot_events_silver"]]:::delta
+    end
+
+    subgraph PATHB["  Path B — Zerobus Ingest (no message bus)  "]
+        direction TB
+        ZB["Zerobus SDK<br/>gRPC push"]:::zerobus
+        ZT[["Delta · slot_events_zerobus<br/>~1,300 events/sec · no Kafka · no files"]]:::delta
+    end
+
+    UC["Unity Catalog<br/>governance"]:::govern
+    OUT(["Same SQL analytics<br/>→ identical results"]):::converge
+
+    SRC --> PATHA
+    SRC --> PATHB
+    PATHA --> UC
+    PATHB --> UC
+    UC --> OUT

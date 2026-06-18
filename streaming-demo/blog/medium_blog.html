@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streaming Without Kafka: Structured Streaming vs. Zerobus Ingest on Databricks</title>
+<meta name="description" content="One casino floor, 500 events, two architectures — and why, for single-destination flows, you can drop the message bus entirely.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Streaming Without Kafka: Structured Streaming vs. Zerobus Ingest on Databricks">
+<meta property="og:description" content="One casino floor, 500 events, two architectures — and why, for single-destination flows, you can drop the message bus entirely.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/streaming-demo/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Streaming Without Kafka: Structured Streaming vs. Zerobus Ingest on Databricks","description":"One casino floor, 500 events, two architectures \u2014 and why, for single-destination flows, you can drop the message bus entirely.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>Streaming Without Kafka: Structured Streaming vs. Zerobus Ingest on Databricks</h1><p><em>One casino floor, 500 events, two architectures — and why, for single-destination flows, you can drop the message bus entirely.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Every real-time pipeline starts with the same fork in the road. Stand up Kafka and pay the operational tax (brokers, partitions, scaling, security), or fall back to batch and eat the latency. For years, those were the choices.</p>
+<p>This demo runs a third option alongside the classic one on the same data, so you can see the difference. The data is from a casino gaming floor: 500 machine events across five floors and five game types. One path ingests it in the established way, with <a href="https://docs.databricks.com/en/structured-streaming/index.html">Structured Streaming</a> and <a href="https://docs.databricks.com/en/ingestion/cloud-object-storage/auto-loader/index.html">Auto Loader</a>. The other pushes it straight into <a href="https://docs.databricks.com/en/delta/index.html">Delta</a> with <a href="https://docs.databricks.com/en/ingestion/zerobus-overview.html"><strong>Zerobus Ingest</strong></a>, the gRPC ingestion path that went GA in February. No Kafka. No file staging. Just source to lakehouse.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/streaming-demo/blog/architecture.png" alt="Architecture"></figure>
+<h2>The classic path: Structured Streaming</h2>
+<p>The first half is the medallion architecture that you know. Auto Loader reads JSON events as they land and streams them into a bronze Delta table.</p>
+<pre><code>raw = (spark.readStream.format("cloudFiles")
+    .option("cloudFiles.format", "json")
+    .option("cloudFiles.schemaLocation", f"{CHECKPOINT}/schema")
+    .load(VOLUME_PATH))
+(raw.writeStream.format("delta")
+    .option("checkpointLocation", CHECKPOINT)
+    .trigger(availableNow=True).toTable(BRONZE_TABLE))</code></pre>
+<p>The same notebook shows the Kafka version commented right beside it, because the beauty of Structured Streaming is that the source is swappable: change <code>cloudFiles</code> to <code>kafka</code> and the rest of the pipeline doesn't move.</p>
+<pre><code>raw = (spark.readStream.format("kafka")
+    .option("kafka.bootstrap.servers", "your-broker:9092")
+    .option("subscribe", "slot_events").load())</code></pre>
+<p>Then the transforms run in flight: cast types, compute net outcome, tier the bets, flag wins, and land a clean silver table.</p>
+<pre><code>silver = (bronze
+    .withColumn("net_outcome", F.round(F.col("win_amount") - F.col("bet_amount"), 2))
+    .withColumn("bet_tier", F.when(F.col("bet_amount") &lt; 10, "Low")
+        .when(F.col("bet_amount") &lt; 100, "Medium").otherwise("High")))</code></pre>
+<p>This is what Structured Streaming is good at: complex, multi-step ETL, in motion, with exactly-once checkpoints. If you need to reshape the data on the way in, this is the path.</p>
+<h2>The new path: Zerobus, straight to Delta</h2>
+<p>The second half does the same job with a fraction of the machinery. Zerobus opens a gRPC stream and pushes records directly into a Delta table.</p>
+<pre><code>sdk = ZerobusSdk(SERVER_ENDPOINT, WORKSPACE_URL)
+stream = sdk.create_stream(CLIENT_ID, CLIENT_SECRET, table_props, options)
+for i in range(NUM_EVENTS):
+    stream.ingest_record_offset(generate_event(base_time))
+stream.flush(); stream.close()</code></pre>
+<p>There's no broker, no topic, no file landing zone. The producer talks to one endpoint, and the rows appear in the lakehouse with a durability guarantee for each record. In this demo, it pushed all 500 events in <strong>0.4 seconds, about 1,300 events a second</strong>, with sub-five-second latency end to end.</p>
+<p>The catch, and it's the important one: Zerobus ingests, it doesn't transform. The data lands raw. You do your typing and your business logic afterward, in silver, exactly like the first path's bronze-to-silver step.</p>
+<h2>Same data, same answers</h2>
+<p>Here's the part that makes the comparison fair. Run the same analytics query against both tables, and you get the same results.</p>
+<pre><code>SELECT casino_floor, COUNT(*) AS plays,
+       ROUND(SUM(bet_amount) - SUM(win_amount), 2) AS house_revenue
+FROM slot_events  -- works on the streaming table OR the zerobus table
+GROUP BY casino_floor ORDER BY house_revenue DESC</code></pre>
+<p>Both paths agree the VIP Lounge cleared about $4,700 for the house while the High Roller floor lost $17,400 to a few big nights. Both rank the machines the same way. The two ingestion routes are functionally equivalent for this data. The difference is entirely in the plumbing that got it there.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/streaming-demo/blog/result_floor_revenue.png" alt="Identical floor revenue from either ingestion path"><figcaption><em>The same grouped query, run against the Structured Streaming silver table and the Zerobus table, returns the same numbers. The routes differ; the results don't.</em></figcaption></figure>
+<h2>Which one, when</h2>
+<p>The decision is simpler than the Kafka-or-batch one it replaces.</p>
+<p>Reach for <strong>Structured Streaming</strong> when you need to transform data in flight, join streams, or when your source is Kafka, and you want the unified source abstraction. It's the right tool for complex streaming ETL.</p>
+<p>Reach for <strong>Zerobus</strong> when the job is high-velocity ingestion into the lakehouse and nothing more: IoT and sensor telemetry, gaming-floor events, clickstream, app events. All the cases where the data has exactly one destination and a message bus in the middle are overhead you were paying out of habit.</p>
+<p>For a large share of real-time pipelines, the honest answer is that you never needed the broker. That's the point of this demo. Same floor, same numbers, one fewer system to run.</p>
+<hr>
+<p><em>The full demo (both pipelines, runnable on <a href="https://docs.databricks.com/en/compute/serverless.html">Databricks Serverless</a>) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/streaming-demo"><code>streaming-demo</code></a> directory. The casino gaming data is entirely synthetic and generated locally for demonstration.</em></p>
+</article></body></html>

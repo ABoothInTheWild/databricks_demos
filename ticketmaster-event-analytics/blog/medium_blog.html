@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Every Event, One Star Schema: An Events Analytics Pipeline from the Ticketmaster API</title>
+<meta name="description" content="Pull a public events API, run it through a medallion, and land a governed star schema you can actually query — bronze to gold in five notebooks.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Every Event, One Star Schema: An Events Analytics Pipeline from the Ticketmaster API">
+<meta property="og:description" content="Pull a public events API, run it through a medallion, and land a governed star schema you can actually query — bronze to gold in five notebooks.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/ticketmaster-event-analytics/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Every Event, One Star Schema: An Events Analytics Pipeline from the Ticketmaster API","description":"Pull a public events API, run it through a medallion, and land a governed star schema you can actually query \u2014 bronze to gold in five notebooks.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>Every Event, One Star Schema: An Events Analytics Pipeline from the Ticketmaster API</h1><p><em>Pull a public events API, run it through a medallion, and land a governed star schema you can actually query — bronze to gold in five notebooks.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Yankee Stadium, the Sphere in Las Vegas, and a 2,000-seat theater in Atlanta. They all show up in the same place: the public Ticketmaster Discovery API. Every event, every venue, every act, free to pull.</p>
+<p>The catch is that a public API is not an analytics platform. It hands you paginated JSON, not a star schema. Turning one into the other, cleanly and governed and query-ready, is the actual work. And it's the same work whether you run a stadium, a venue network, or the business side of a sports team.</p>
+<p>This demo does exactly that on Databricks, in five notebooks. About 4,800 events from the live API, through a bronze-silver-gold <a href="https://docs.databricks.com/en/lakehouse/medallion.html">medallion</a>, into a relational star schema with real keys, constraints, and views.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/ticketmaster-event-analytics/blog/architecture.png" alt="Architecture"></figure>
+<h2>Ingest: a public API, paginated politely</h2>
+<p>The Discovery API is paginated and rate-limited, so the first notebook pulls events, venues, attractions, and classifications with a small client that walks the pages and backs off between calls. The raw JSON lands in a <a href="https://docs.databricks.com/en/volumes/index.html">Unity Catalog Volume</a>, untouched and partitioned by date.</p>
+<pre><code>def fetch_paginated(self, endpoint, page_size=200, max_pages=None, params=None):
+    all_items, page = [], 0
+    while True:
+        if max_pages and page &gt;= max_pages: break
+        resp = requests.get(f"{self.base_url}{endpoint}",
+                            params={"apikey": self.api_key, "size": page_size, "page": page, **(params or {})},
+                            timeout=30)
+        resp.raise_for_status(); data = resp.json()
+        items = data.get("_embedded", {}).get(self._items_key(endpoint), [])
+        if not items: break
+        all_items.extend(items)
+        if page &gt;= data.get("page", {}).get("totalPages", 1) - 1: break
+        page += 1; time.sleep(0.2)   # be polite to the API
+    return all_items</code></pre>
+<p>Land it raw, decide what it means later. That separation is the whole point of a medallion.</p>
+<h2>Bronze: land everything as VARIANT</h2>
+<p><a href="https://docs.databricks.com/en/ingestion/cloud-object-storage/auto-loader/index.html">Auto Loader</a> reads the landed JSON in batch mode and stores each payload as a <a href="https://docs.databricks.com/en/semi-structured/variant.html"><code>VARIANT</code></a> column, with ingestion metadata alongside.</p>
+<pre><code>(spark.readStream.format("cloudFiles")
+    .option("cloudFiles.format", "json")
+    .option("cloudFiles.schemaLocation", checkpoint + "/_schema")
+    .load(source_path)
+    .selectExpr("PARSE_JSON(TO_JSON(STRUCT(*))) AS data",
+                "current_timestamp() AS _ingestion_timestamp",
+                "_metadata.file_path AS _source_file")
+    .writeStream.option("checkpointLocation", checkpoint)
+    .trigger(availableNow=True).toTable(target_table))</code></pre>
+<p>A public API you don't control will eventually add or rename fields. VARIANT means that day is a non-event for bronze.</p>
+<h2>Silver: typed, deduplicated, and constrained</h2>
+<p>Silver is where JSON becomes a data model. We pull the known fields out of the VARIANT by dot-path, type them, and build MD5 surrogate keys so every write is deterministic and <code>INSERT OVERWRITE</code> is safe to re-run.</p>
+<pre><code>INSERT OVERWRITE silver.venues
+SELECT
+    MD5(data:id::string)               AS venue_sk,
+    data:id::string                    AS venue_id,
+    data:name::string                  AS venue_name,
+    data:city.name::string             AS city,
+    data:state.stateCode::string       AS state,
+    data:location.latitude::double     AS latitude,
+    data:location.longitude::double    AS longitude
+FROM bronze.venues_raw
+WHERE data:id IS NOT NULL</code></pre>
+<p>We declare primary and foreign keys with <a href="https://docs.databricks.com/en/tables/constraints.html"><code>RELY</code></a> (informational; they render an ERD in <a href="https://docs.databricks.com/en/catalog-explorer/index.html">Catalog Explorer</a> and help the optimizer), turn on <a href="https://docs.databricks.com/en/delta/clustering.html">liquid clustering</a>, and explode the event-to-attraction arrays into a bridge table because one festival has many acts.</p>
+<h2>Gold: a star schema any BI tool will love</h2>
+<p>Gold reshapes silver into a textbook star: a pre-generated <code>dim_date</code> (2024 through 2027), Type 1 dimensions for venue, attraction, and classification, a <code>fact_events</code> table at one row per event, and a <code>bridge_event_attractions</code> table for the many-to-many. On top sit three analytical views, so a business user never has to write a join.</p>
+<pre><code>CREATE TABLE fact_events (
+    event_sk STRING NOT NULL, date_sk_fk INT, venue_sk_fk STRING,
+    classification_sk_fk STRING, event_date DATE, price_min DOUBLE, price_max DOUBLE, status_code STRING
+) CLUSTER BY (date_sk_fk, venue_sk_fk);
+
+ALTER TABLE fact_events ADD CONSTRAINT fact_events_venue_fk
+    FOREIGN KEY (venue_sk_fk) REFERENCES dim_venue (venue_sk);</code></pre>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/ticketmaster-event-analytics/blog/ss_catalog_gold.png" alt="The gold star schema in Catalog Explorer"><figcaption><em>The gold layer: one fact table radiating to date, venue, attraction, and classification dimensions, with a bridge for events that have multiple acts.</em></figcaption></figure>
+<h2>Analyze: what the feed actually says</h2>
+<p>The last notebook is just questions, answered with fact-to-dimension joins. They land immediately.</p>
+<pre><code>SELECT v.venue_name, v.city, v.state, COUNT(*) AS events
+FROM fact_events f JOIN dim_venue v ON f.venue_sk_fk = v.venue_sk
+GROUP BY ALL ORDER BY events DESC LIMIT 5</code></pre>
+<p>Yankee Stadium and a Vegas casino top the venue list. The segment split is the interesting part for a sports audience: of ~4,800 events, 448 are tagged Sports, 604 Music, 746 Arts &amp; Theatre, and a large "Undefined" bucket that's a data-quality story in its own right.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/ticketmaster-event-analytics/blog/result_tables.png" alt="Top venues and segment breakdown"><figcaption><em>Two of the ten sample queries: busiest venues, and the event mix by segment. Filter <code>fact_events</code> to the Sports segment and you have every game in the feed, across every venue.</em></figcaption></figure>
+<p>Filter to Sports and the familiar names show up: the Toronto Blue Jays, WWE, each appearing across multiple dates and cities. The same pattern works for any segment, any geography, any price band, because the grain is one clean row per event.</p>
+<h2>The point</h2>
+<p>The events data was public the whole time. The value isn't the data, it's the governed star schema around it: deduplicated, typed, constrained, query-ready, and lineage-tracked from the API call down to the view.</p>
+<p>And none of it is Ticketmaster-specific. Point the first notebook at your own ticketing feed, your CRM, or a partner's events API, and the medallion and the star schema hold. That's what makes it an accelerator instead of a one-off: the hard part is built, and only the first notebook knows where the data came from.</p>
+<hr>
+<p><em>The full demo (five notebooks, runnable locally via <a href="https://docs.databricks.com/en/dev-tools/databricks-connect/index.html">Databricks Connect</a>) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/ticketmaster-event-analytics"><code>ticketmaster-event-analytics</code></a> directory. It runs against the public Ticketmaster Discovery API; bring your own API key.</em></p>
+</article></body></html>

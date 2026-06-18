@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From a Music API to a Governed Data Product: The rostr Pipeline on Databricks</title>
+<meta name="description" content="Ingest an evolving music-industry API, run it through a medallion, and land a star schema plus a dashboard that answers &quot;who represents whom&quot; — six notebooks, end to end.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="From a Music API to a Governed Data Product: The rostr Pipeline on Databricks">
+<meta property="og:description" content="Ingest an evolving music-industry API, run it through a medallion, and land a star schema plus a dashboard that answers &quot;who represents whom&quot; — six notebooks, end to end.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/rostr-artist-team-pipeline/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"From a Music API to a Governed Data Product: The rostr Pipeline on Databricks","description":"Ingest an evolving music-industry API, run it through a medallion, and land a star schema plus a dashboard that answers \"who represents whom\" \u2014 six notebooks, end to end.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>From a Music API to a Governed Data Product: The rostr Pipeline on Databricks</h1><p><em>Ingest an evolving music-industry API, run it through a medallion, and land a star schema plus a dashboard that answers "who represents whom" — six notebooks, end to end.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>The music business runs on relationships. Which agency books an artist, which manager handles their career, which label puts out the records, and which specific person at each firm is on the account. The rostr.cc API exposes that whole graph. The problem, as always, is that an API is not a data product. It hands back deeply nested, ever-changing JSON, and turning that into something a label's analytics team can query is the work.</p>
+<p>This demo does it on Databricks in six notebooks: the rostr API to a governed, BI-ready star schema, plus a Lakeview dashboard on top. Twenty-eight artists, eighty companies, the people behind them, and the relationships that connect them.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/rostr-artist-team-pipeline/blog/architecture.png" alt="Architecture"></figure>
+<h2>Ingest: fan out, and don't repeat yourself</h2>
+<p>The first notebook starts from a seed list of artists and fans out, pulling each artist's detail and their four-role team (agency, management, label, publisher) into a <a href="https://docs.databricks.com/en/volumes/index.html">Unity Catalog Volume</a> as raw JSON. It's idempotent: a file that has already landed is skipped, so a rerun doesn't hammer the API.</p>
+<pre><code>def ingest_artist(name, handle):
+    path = f"{ARTISTS_DIR}/{handle}.json"
+    if not FORCE_REFRESH and already_uploaded(path):
+        return "skipped"
+    upload(path, rostr.get_artist(handle)); return "wrote"</code></pre>
+<h2>Bronze: land it as VARIANT</h2>
+<p><a href="https://docs.databricks.com/en/ingestion/cloud-object-storage/auto-loader/index.html">Auto Loader</a> reads the JSON and stores each payload as a <a href="https://docs.databricks.com/en/semi-structured/variant.html"><code>VARIANT</code></a> column. The rostr API is third-party and evolving, so bronze makes no promises about shape; new fields just land.</p>
+<pre><code>(spark.readStream.format("cloudFiles")
+    .option("cloudFiles.format", "json")
+    .load(source_dir)
+    .selectExpr("PARSE_JSON(TO_JSON(STRUCT(*))) AS data",
+                "current_timestamp() AS _ingestion_timestamp",
+                "_metadata.file_path AS _source_file")
+    .writeStream.trigger(availableNow=True).toTable(target_table))</code></pre>
+<h2>Silver: untangle the graph</h2>
+<p>Silver is where the nested JSON becomes a relational model. The team payload is the hard part: each artist has multiple companies, each company has multiple people. We explode it out into typed, normalized tables with <code>from_json</code> and <code>LATERAL VIEW EXPLODE</code>.</p>
+<pre><code>SELECT artist_handle, role, entry.company, entry.team
+FROM bronze_team
+LATERAL VIEW EXPLODE(
+    FROM_JSON(data:entries::string,
+        'ARRAY&lt;STRUCT&lt;company:STRUCT&lt;rostrId:STRING,name:STRING,...&gt;, team:ARRAY&lt;...&gt;&gt;&gt;')
+) AS entry</code></pre>
+<p>MD5 surrogate keys make every write deterministic, and we declare primary and foreign keys with <a href="https://docs.databricks.com/en/tables/constraints.html"><code>RELY</code></a>, which render an ERD in <a href="https://docs.databricks.com/en/catalog-explorer/index.html">Catalog Explorer</a> and give the optimizer something to work with. The result is five clean tables: artists, companies, the full company rosters, and the two bridge tables that capture which firm (and which person) represents which artist.</p>
+<h2>Gold: a star schema, and a market-share view</h2>
+<p>Gold collapses silver into a star: dimensions for artist, company, and person; a fact table for artist-team relationships; and a handful of analytical views that answer the questions a music exec actually asks.</p>
+<pre><code>CREATE OR REPLACE VIEW v_agency_market_share AS
+SELECT company_name AS agency,
+       COUNT(DISTINCT artist_handle) AS artists_represented,
+       ROUND(COUNT(*) * 100.0 / (SELECT COUNT(DISTINCT artist_handle)
+              FROM silver_artist_company WHERE role='AGENCY'), 1) AS market_share_pct
+FROM silver_artist_company WHERE role = 'AGENCY'
+GROUP BY company_name ORDER BY artists_represented DESC</code></pre>
+<h2>Consume: a dashboard as code</h2>
+<p>The last notebook builds a <a href="https://docs.databricks.com/en/dashboards/index.html">Lakeview AI/BI dashboard</a> entirely from the SDK, no clicking: KPI counters for artists, companies, and people, an agency market-share pie, a top-managers table, and a Spotify-reach bar. It's defined in the notebook and published in place, so it lives in version control like the rest of the pipeline.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/rostr-artist-team-pipeline/blog/result_tables.png" alt="Agency market share and reach, from the gold views"><figcaption><em>The numbers the dashboard is built on, straight from the gold views: two agencies represent three-quarters of the seed, and the Spotify-reach leaderboard runs from Justin Bieber down.</em></figcaption></figure>
+<p>And the data has a story. Across the seed of top artists, CAA represents 44% of them and WME another 32%. Two agencies, three-quarters of the roster. That's a real finding falling out of a demo pipeline, which is the whole point of getting the data into shape: the analytics become trivial once the model is right.</p>
+<h2>The point</h2>
+<p>The relationships were public in the API the entire time. The value is the governed product around them: typed, deduplicated, constrained, lineage-tracked, and sitting behind a dashboard that a non-engineer can read.</p>
+<p>None of it is music-specific. Point the first notebook at a different API, keep the <a href="https://docs.databricks.com/en/lakehouse/medallion.html">medallion</a> and the star schema, and you've shipped a governed data product for whatever domain you're in. The hard part is built once; only the ingest knows it's about music.</p>
+<hr>
+<p><em>The full demo (six notebooks, runnable locally via <a href="https://docs.databricks.com/en/dev-tools/databricks-connect/index.html">Databricks Connect</a> or in-workspace) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/rostr-artist-team-pipeline"><code>rostr-artist-team-pipeline</code></a> directory. It runs against the rostr.cc API; the figures shown are from a small sample of public artist profiles.</em></p>
+</article></body></html>

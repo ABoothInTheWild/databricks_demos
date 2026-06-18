@@ -1,0 +1,27 @@
+flowchart TD
+    subgraph top["&nbsp;"]
+        direction LR
+        A["<b>rostr.cc API</b><br/>artists · 4-role teams"]
+        B["<b>UC Volume</b><br/>raw JSON · idempotent"]
+        C["<b>Auto Loader → Bronze</b><br/>VARIANT schema"]
+        A --> B --> C
+    end
+
+    subgraph bot["&nbsp;"]
+        direction LR
+        D["<b>Silver</b><br/>typed · explode artist↔team graph<br/>MD5 keys · RELY PK/FK"]
+        E["<b>Gold Star Schema</b><br/>dim_artist · dim_company · dim_person<br/>fact_artist_team · market-share views"]
+        F["<b>Lakeview AI/BI</b><br/>Dashboard"]
+        D --> E --> F
+    end
+
+    C --> D
+
+    style A fill:#FF6B35,stroke:#FF6B35,color:#ffffff
+    style B fill:#1E2D40,stroke:#FF6B35,stroke-width:3px,color:#ffffff
+    style C fill:#0194E2,stroke:#0194E2,color:#ffffff
+    style D fill:#2D3F55,stroke:#2D3F55,color:#ffffff
+    style E fill:#5B3FA6,stroke:#5B3FA6,color:#ffffff
+    style F fill:#1E7E6B,stroke:#1E7E6B,color:#ffffff
+    style top fill:#f8f8f8,stroke:#e0e0e0,stroke-width:1px,color:#888888
+    style bot fill:#f8f8f8,stroke:#e0e0e0,stroke-width:1px,color:#888888
