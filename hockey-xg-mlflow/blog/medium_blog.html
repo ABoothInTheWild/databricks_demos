@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Expected Goals, End-to-End: An MLOps Pipeline for Hockey on Databricks</title>
+<meta name="description" content="From synthetic shots to a calibrated xG model — governed in Unity Catalog, served behind an endpoint, and watched for drift.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Expected Goals, End-to-End: An MLOps Pipeline for Hockey on Databricks">
+<meta property="og:description" content="From synthetic shots to a calibrated xG model — governed in Unity Catalog, served behind an endpoint, and watched for drift.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Expected Goals, End-to-End: An MLOps Pipeline for Hockey on Databricks","description":"From synthetic shots to a calibrated xG model \u2014 governed in Unity Catalog, served behind an endpoint, and watched for drift.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>Expected Goals, End-to-End: An MLOps Pipeline for Hockey on Databricks</h1><p><em>From synthetic shots to a calibrated xG model — governed in Unity Catalog, served behind an endpoint, and watched for drift.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Every hockey analytics team eventually reaches the same realization. Counting shots is a lie.</p>
+<p>A team can fire 35 pucks from the perimeter and lose to a team that took 18 from the slot. Shot volume tells you almost nothing. Shot <em>quality</em> is the thing, and the metric that captures it is expected goals: the probability that a given shot becomes a goal, based on where it was taken, how it was taken, and the situation.</p>
+<p>Building an xG model is the easy part. A logistic regression on shot distance and angle gets you most of the way there in an afternoon. The hard part is everything around it. Tracking the experiments. Picking a winner you can defend. Governing the model so the version in production is the version you think it is. Serving it. And knowing when the league shifts under you and your model quietly goes stale.</p>
+<p>This demo does all of that on Databricks, in seven notebooks, with no external API and no hockey knowledge required to follow along.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/architecture_data.png" alt="The data pipeline"><figcaption><em>The data pipeline: synthetic shots to leakage-safe features.</em></figcaption></figure>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/architecture_ml.png" alt="The ML lifecycle"><figcaption><em>The ML lifecycle: train, govern, serve, and watch for drift.</em></figcaption></figure>
+<h2>The data: 50,000 synthetic shots</h2>
+<p>The first notebook generates a season's worth of shots. About 50,000 of them, across 32 teams, each with a hidden ground-truth probability of becoming a goal. That hidden function is the point. Because we know the true P(goal) for every shot, we can check later whether the model's probabilities actually mean something.</p>
+<p>The overall goal rate lands at 9.42%, which is squarely where real NHL shooting percentage sits. Synthetic data gets a bad reputation, but here it buys three things: it's reproducible, it carries no licensing baggage, and it gives us a known answer to grade against. Swap in your own tracking feed later and nothing downstream changes.</p>
+<h2>Features a hockey fan would recognize</h2>
+<p>The second notebook turns raw shots into model features, and each one is something you could explain from the broadcast booth.</p>
+<pre><code>feat = (src
+    .withColumn("distance_sq", F.col("distance_ft") ** 2)
+    .withColumn("angle_sq", F.col("angle_deg") ** 2)
+    .withColumn("is_high_danger",
+                ((F.col("distance_ft") &lt;= 20.0) &amp; (F.col("angle_deg") &lt;= 30.0)).cast("int"))
+    .withColumn("rebound_dist", F.col("rebound").cast("int") * F.col("distance_ft"))
+)</code></pre>
+<p>Distance and angle to the net. Their squared terms, because the relationship is not linear. One-hot encodings for shot type and strength state. A rebound flag, and a rebound-times-distance interaction, because a rebound from the doorstep is a very different animal than a rebound from the blue line.</p>
+<p>The signal is real, and it shows up immediately. Goal rate climbs as shots get closer to the net, and it spikes for the shot types you'd expect. Tip-ins convert at 13.5%, rebounds at 15.1%, and an empty-net 6-on-5 sits at a frankly silly 45.7% against the 8.6% you get at even strength.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/shot_map.png" alt="Shot map and goal rate by distance"><figcaption><em>The classic hockey analytics view: the slot lights up, the perimeter goes cold. This is the signal the model learns.</em></figcaption></figure>
+<h2>Three models, one experiment</h2>
+<p>The third notebook trains three candidates that each output a probability the shot is a goal: logistic regression, random forest, and XGBoost. Everything gets logged to <a href="https://docs.databricks.com/en/mlflow/index.html">MLflow</a>. Parameters, metrics, an ROC curve, and the one I care about most, a calibration curve.</p>
+<pre><code>with mlflow.start_run(run_name="xgb_v1"):
+    mlflow.set_tag("model_family", "xgboost")
+    xgb_clf.fit(X_train, y_train)
+    mlflow.log_metric("test_roc_auc", roc_auc_score(y_test, proba))
+    mlflow.log_metric("test_log_loss", log_loss(y_test, proba))
+    mlflow.log_figure(fig_calibration, "calibration_curve.png")
+    mlflow.pyfunc.log_model("model", python_model=XGPredictor(xgb_clf), signature=sig)</code></pre>
+<p>That <code>XGPredictor</code> wrapper matters. By default, a classifier hands you a label, 0 or 1. For xG, we want the probability, so a tiny pyfunc wrapper overrides <code>predict</code> to return P(goal):</p>
+<pre><code>class XGPredictor(mlflow.pyfunc.PythonModel):
+    def __init__(self, classifier):
+        self.classifier = classifier
+    def predict(self, context, model_input):
+        return self.classifier.predict_proba(model_input)[:, 1]   # P(goal), not the label</code></pre>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/ss_mlflow_experiment.png" alt="Three runs in one MLflow experiment"><figcaption><em>All three candidates tracked in one MLflow experiment, logged from a local notebook running on Serverless.</em></figcaption></figure>
+<p>Here is the part people find annoying and I find reassuring: the simplest model won. Logistic regression achieved the lowest log-loss, 0.2753, edging out both the random forest (0.2787) and XGBoost (0.2785). On a problem this well-behaved, the fancy models had nothing extra to find.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/model_comparison.png" alt="Model comparison on the held-out test set"><figcaption><em>The held-out scoreboard. Logistic regression wins on log-loss, the metric that actually matters for a probability you intend to trust.</em></figcaption></figure>
+<p>And log-loss, not accuracy, is the right scoreboard. An xG number is only useful if it's <em>calibrated</em>: when the model says 0.30, that group of shots should go in about 30% of the time. A model can have great accuracy and lie about its probabilities. Calibration is what makes the output trustworthy.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/calibration_curve.png" alt="Champion calibration curve"><figcaption><em>The champion's calibration curve: predicted probability against actual goal rate. Hugging the diagonal means the numbers mean what they say.</em></figcaption></figure>
+<h2>Pick a champion, govern it in Unity Catalog</h2>
+<p>The fourth notebook holds out a slice of data the models never saw, scores all three, picks the winner by log-loss, and registers it to the <a href="https://docs.databricks.com/en/machine-learning/manage-model-lifecycle/index.html">Unity Catalog model registry</a> with semantic aliases.</p>
+<pre><code>champ_mv = mlflow.register_model(f"runs:/{champion_run.info.run_id}/model", MODEL_NAME)
+client.set_registered_model_alias(MODEL_NAME, "champion",   champ_mv.version)
+client.set_registered_model_alias(MODEL_NAME, "challenger", chal_mv.version)</code></pre>
+<p><code>@champion</code> and <code>@challenger</code> are the whole trick. Production code never hard-codes a version number. It asks for <code>@champion</code> and gets whatever the latest blessed model is. Promoting a new model is a one-line alias flip, and rolling back is the same line in reverse.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/ss_uc_model.png" alt="The model governed in Unity Catalog"><figcaption><em>Governed like any other UC asset: versions, the <code>@champion</code> and <code>@challenger</code> aliases, the production tag, and the linked serving endpoint. Promotion is one alias change.</em></figcaption></figure>
+<h2>Serve it, then query it</h2>
+<p>The fifth and sixth notebooks take the champion to production. Batch inference loads it by alias, not by version:</p>
+<pre><code>model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}@champion")
+pdf["xg"] = model.predict(X)
+# When @champion flips to a new version, this line picks it up. No code change.</code></pre>
+<p>Then we set up a real-time <a href="https://docs.databricks.com/en/machine-learning/model-serving/index.html">serving endpoint</a> with scale-to-zero, so it costs nothing while idle, and turn on the inference table so every request and response is logged automatically for monitoring.</p>
+<pre><code>served = ServedEntityInput(entity_name=MODEL_NAME, entity_version=str(champ.version),
+                           workload_size="Small", scale_to_zero_enabled=True)
+w.serving_endpoints.create(name=ENDPOINT, config=cfg, ai_gateway=ai_gateway)</code></pre>
+<p>The sanity check is the fun part. Feed it a high-danger rebound from the slot, and it returns an xG of 0.314. Feed it a low-danger slap shot from the point, and it returns 0.018. The model learned hockey.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/ss_serving_endpoint.png" alt="The champion behind a serving endpoint"><figcaption><em>The champion behind a scale-to-zero serving endpoint, with the inference table capturing every request for monitoring.</em></figcaption></figure>
+<h2>Watch it drift</h2>
+<p>The last notebook is the one most demos skip. Models don't fail loudly. They rot quietly, as the world stops looking like the training data.</p>
+<p>So we simulate exactly that. A new batch of 8,000 shots arrives, but skewed: more perimeter shots, fewer rebounds, more penalty kill. The goal rate drops from 9.42% to 2.46%. We score it with <code>@champion</code> and let <a href="https://docs.databricks.com/en/lakehouse-monitoring/index.html">Lakehouse Monitoring</a> do its job.</p>
+<pre><code>inference_log = MonitorInferenceLog(
+    timestamp_col="scored_at_utc",
+    granularities=["1 day"],
+    prediction_col="prediction",
+    problem_type=MonitorInferenceLogProblemType.PROBLEM_TYPE_CLASSIFICATION,
+)
+w.quality_monitors.create(table_name=PRED_TABLE, inference_log=inference_log,
+                          slicing_exprs=["shot_type", "strength_state"])</code></pre>
+<p>The monitor profiles the prediction stream, compares it to baseline, and slices the drift by <code>shot_type</code> and <code>strength_state</code>, so you don't just learn <em>that</em> the input shifted, you learn <em>where</em>. That's the difference between an alert that says "something's wrong" and one that says "your perimeter-shot distribution moved, go look."</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-xg-mlflow/blog/drift_monitor.png" alt="Drift in the prediction stream"><figcaption><em>Drift, made visible. On the drifted batch, the average predicted xG and the actual goal rate both fall off a cliff. That's the signal the monitor exists to catch.</em></figcaption></figure>
+<h2>The point</h2>
+<p>The xG model here is deliberately simple. Logistic regression on a couple of dozen features. You could read every line of it.</p>
+<p>The pipeline around the model is the part that's actually production: experiments tracked in MLflow, a champion governed in Unity Catalog, a scale-to-zero endpoint, inference logging, and a monitor that catches drift and tells you where it happened. Point the first notebook at a real tracking feed instead of the synthetic generator, and the entire story downstream is unchanged.</p>
+<p>That's the whole pitch. The model is the easy 20%. Databricks is how you handle the other 80% without having to build it all yourself.</p>
+<hr>
+<p><em>The full demo (seven notebooks, all runnable on <a href="https://docs.databricks.com/en/dev-tools/databricks-connect/index.html">Databricks Serverless</a>) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/hockey-xg-mlflow">hockey-xg-mlflow</a> directory. The shot data used throughout is entirely synthetic and generated locally for demonstration.</em></p>
+</article></body></html>

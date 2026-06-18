@@ -1,0 +1,41 @@
+flowchart LR
+    classDef source fill:#FF6B35,stroke:#c94d18,stroke-width:2px,color:#ffffff
+    classDef volume fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef ingest fill:#0194E2,stroke:#0177b8,stroke-width:2px,color:#ffffff
+    classDef bronze fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef process fill:#2D3F55,stroke:#4a6080,stroke-width:2px,color:#ffffff
+    classDef silver fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef gold fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef govern fill:#5B3FA6,stroke:#3d2a74,stroke-width:2px,color:#ffffff
+    classDef dashboard fill:#1E7E6B,stroke:#145a4d,stroke-width:2px,color:#ffffff
+    classDef genie fill:#7C3AED,stroke:#5b29b5,stroke-width:2px,color:#ffffff
+
+    SRC(["SportLogiq NHL API<br/>~25 routes"]):::source
+
+    subgraph ING["INGEST"]
+        VOL[("UC Volume<br/>raw JSON")]:::volume
+        AL["Auto Loader<br/>availableNow · schema rescue"]:::ingest
+    end
+
+    subgraph BRONZE["BRONZE"]
+        BRZ[["bronze tables<br/>VARIANT"]]:::bronze
+    end
+
+    subgraph SILVER["SILVER"]
+        PROJ["Typed projection<br/>explode arrays"]:::process
+        SIL[["14 silver tables<br/>MD5 keys · RELY PK/FK"]]:::silver
+    end
+
+    subgraph GOLD["GOLD"]
+        STAR["Star schema build"]:::process
+        GLD[["5 dims + 4 facts<br/>standings · season leaders<br/>shot map"]]:::gold
+    end
+
+    UC["Unity Catalog<br/>comments · tags · lineage"]:::govern
+    DASH["AI/BI Lakeview<br/>dashboard"]:::dashboard
+    GENIE["Genie space<br/>Corsi · Fenwick · xG<br/>TOI · strength state"]:::genie
+
+    SRC --> VOL --> AL --> BRZ --> PROJ --> SIL --> STAR --> GLD
+    GLD --> UC
+    GLD --> DASH
+    GLD --> GENIE

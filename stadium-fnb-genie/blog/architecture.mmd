@@ -1,0 +1,43 @@
+flowchart LR
+    classDef datagen fill:#FF6B35,stroke:#cc5228,stroke-width:2px,color:#ffffff
+    classDef uctable fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#ffffff
+    classDef process fill:#2D3F55,stroke:#4a6080,stroke-width:2px,color:#ffffff
+    classDef ucgov fill:#5B3FA6,stroke:#3d2b75,stroke-width:2px,color:#ffffff
+    classDef genie fill:#7C3AED,stroke:#5b2ab0,stroke-width:2px,color:#ffffff
+    classDef output fill:#1E7E6B,stroke:#155a4c,stroke-width:2px,color:#ffffff
+    classDef note fill:#f0f4ff,stroke:#7C3AED,stroke-width:1.5px,color:#1E2D40
+
+    %% Stage 1 - Data generation
+    GEN["Synthetic F&B<br/>data generator<br/>10 venues · 400 events<br/>18 months of history"]:::datagen
+
+    %% Stage 2 - Unity Catalog model
+    subgraph UC ["Unity Catalog"]
+        direction TB
+        TABLES["10 governed tables<br/>venues · events · concession_stands<br/>menu_items · transactions<br/>transaction_items · labor_shifts<br/>inventory_movements · staff<br/>stand_menu"]:::uctable
+        META["PK / FK constraints<br/>column-level comments"]:::ucgov
+        TABLES --- META
+    end
+
+    %% Stage 3 - Genie tuning
+    subgraph GTUNE ["Genie Space"]
+        direction TB
+        SPACE["Genie space"]:::genie
+        INST["Instructions<br/>glossary + join hints"]:::process
+        SQL["7 trusted<br/>SQL examples"]:::process
+        QUES["15 sample<br/>questions"]:::process
+        INST --> SPACE
+        SQL --> SPACE
+        QUES --> SPACE
+    end
+
+    %% Stage 4 - Output
+    NLQ["Plain-English question<br/><i>How does rain affect beer sales?</i>"]:::output
+    ANS["Generated SQL<br/>+ chart + answer"]:::output
+    METRICS["Key metrics surfaced<br/>per-cap spend · labor %<br/>waste rate · weather elasticity"]:::note
+
+    %% Connections
+    GEN --> UC
+    UC --> GTUNE
+    NLQ --> SPACE
+    SPACE --> ANS
+    ANS -.- METRICS

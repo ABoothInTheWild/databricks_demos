@@ -1,0 +1,16 @@
+#my-svg #my-svg-GEN span, #my-svg #my-svg-GEN p,
+#my-svg #my-svg-DELTA span, #my-svg #my-svg-DELTA p,
+#my-svg #my-svg-SHARE span, #my-svg #my-svg-SHARE p,
+#my-svg #my-svg-PROF span, #my-svg #my-svg-PROF p,
+#my-svg #my-svg-BRIDGE span, #my-svg #my-svg-BRIDGE p {
+  color: #FFFFFF !important;
+  fill: #FFFFFF !important;
+}
+#my-svg #my-svg-SP1 .nodeLabel,
+#my-svg #my-svg-SP1 span,
+#my-svg #my-svg-SP1 p { display: none !important; }
+
+.nodeLabel {
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+  font-size: 15px !important;
+}

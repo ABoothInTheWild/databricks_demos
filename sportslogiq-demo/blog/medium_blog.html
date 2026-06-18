@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From a Sports API to Self-Serve BI: A Governed Hockey Data Product on Databricks</title>
+<meta name="description" content="Ingest a hockey analytics API, land it through a medallion, model it as a star schema, and let a coach ask questions in plain English — all in one codebase.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="From a Sports API to Self-Serve BI: A Governed Hockey Data Product on Databricks">
+<meta property="og:description" content="Ingest a hockey analytics API, land it through a medallion, model it as a star schema, and let a coach ask questions in plain English — all in one codebase.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"From a Sports API to Self-Serve BI: A Governed Hockey Data Product on Databricks","description":"Ingest a hockey analytics API, land it through a medallion, model it as a star schema, and let a coach ask questions in plain English \u2014 all in one codebase.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>From a Sports API to Self-Serve BI: A Governed Hockey Data Product on Databricks</h1><p><em>Ingest a hockey analytics API, land it through a medallion, model it as a star schema, and let a coach ask questions in plain English — all in one codebase.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Every team in pro sports is sitting on the same problem. They pay for a great analytics feed. SportLogiq, Sportlogiq's competitors, the league's own tracking data. And then it just sits there, behind an API, waiting for someone technical enough to turn it into an answer.</p>
+<p>The gap isn't the data, and it isn't the warehouse. It's the thing in between: the codebase that turns a raw JSON feed into governed tables, a dashboard the front office actually opens, and a question box a coach can type into without knowing what a JOIN is.</p>
+<p>This demo is that thing in between, built on Databricks in eight notebooks. It takes the SportLogiq NHL API, runs it through a bronze-silver-gold medallion, shapes it into a star schema, and lands it in front of two consumers: an <a href="https://docs.databricks.com/en/dashboards/index.html">AI/BI dashboard</a> and a <a href="https://docs.databricks.com/en/genie/index.html">Genie</a> space that speaks hockey.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/architecture.png" alt="Architecture"></figure>
+<h2>Ingest: ~25 routes, four modes, fully resumable</h2>
+<p>The SportLogiq API is not one endpoint. It's rosters, events, shifts, time-on-ice, per-game metrics, season aggregates, and reference data. The first notebook pulls roughly 25 routes into a <a href="https://docs.databricks.com/en/data-governance/unity-catalog/index.html">Unity Catalog</a> Volume as raw JSON, in whatever shape the API hands back.</p>
+<p>Two things make it production-grade instead of a script. It runs in four modes (<code>daily</code>, <code>season</code>, <code>team</code>, <code>date_window</code>) so you can backfill a season or top up last night's games. And it's idempotent: every file already in the Volume is skipped, so a failed run resumes instead of restarting.</p>
+<pre><code>def already_uploaded(path: str) -&gt; bool:
+    try:
+        w.files.get_metadata(path)
+        return True
+    except Exception:
+        return False
+
+with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as exe:
+    futures = {exe.submit(ingest_game, gid): gid for gid in game_ids}</code></pre>
+<h2>Bronze: land everything as VARIANT</h2>
+<p>Bronze doesn't try to be smart. <a href="https://docs.databricks.com/en/ingestion/cloud-object-storage/auto-loader/index.html">Auto Loader</a> reads each JSON file and stores the payload as a <a href="https://docs.databricks.com/en/semi-structured/variant.html"><code>VARIANT</code></a> column, with schema rescue turned on, so a new field in the feed never breaks ingestion.</p>
+<pre><code>spark.readStream.format("cloudFiles")
+  .option("cloudFiles.format", "json")
+  .option("cloudFiles.schemaEvolutionMode", "rescue")
+  .load(source_path)
+  .selectExpr("PARSE_JSON(TO_JSON(STRUCT(*))) AS data",
+              "current_timestamp() AS _ingestion_timestamp",
+              "_metadata.file_path AS _source_file")
+  .writeStream.toTable(target_table)</code></pre>
+<p>VARIANT is the right call for a vendor feed you don't control. The API can add a field tomorrow, and Bronze just absorbs it. You decide later whether silver cares.</p>
+<h2>Silver: typed tables, MD5 keys, and real constraints</h2>
+<p>Silver is where JSON becomes hockey. We pull known fields out of the VARIANT with dot-path syntax, explode the nested arrays (a game's roster, its events), and type everything into 14 clean tables.</p>
+<pre><code>SELECT
+    MD5(CONCAT_WS('||', CAST(game_id AS STRING), crew.id)) AS roster_sk,
+    crew.id::int AS person_id,
+    crew.first_name, crew.last_name
+FROM bronze_game_rosters
+LATERAL VIEW EXPLODE(
+    FROM_JSON(data:crew::string, 'ARRAY&lt;STRUCT&lt;id:STRING, first_name:STRING, ...&gt;&gt;')
+) AS crew</code></pre>
+<p>The keys are MD5 surrogates derived from the natural keys, making every write deterministic. Re-run the notebook, and you get the same keys, so <code>INSERT OVERWRITE</code> is safe and idempotent. We also declare <a href="https://docs.databricks.com/en/tables/constraints.html">primary and foreign keys</a> with <code>RELY</code>. They're informational, not enforced, but they do two valuable things for free: they render an ERD in Catalog Explorer, and they tell Genie how the tables join.</p>
+<pre><code>ALTER TABLE fact_game_events ADD CONSTRAINT fact_game_events_game_fk
+    FOREIGN KEY (game_id) REFERENCES dim_game (game_id) RELY;</code></pre>
+<h2>Gold: a star schema any BI tool will love</h2>
+<p>Gold reshapes silver into a five-dimensional, four-fact star schema: <code>dim_team</code>, <code>dim_player</code>, <code>dim_venue</code>, <code>dim_game</code>, <code>dim_date,</code> feeding <code>fact_game_events</code>, <code>fact_player_shifts</code>, <code>fact_player_game_metrics</code>, and <code>fact_player_season_metrics</code>. On top of that sit three views that answer the most common questions directly: <code>v_team_standings</code>, <code>v_player_season_leaders</code>, and <code>v_shot_map</code>.</p>
+<p>This is the layer where the hockey gets real. The metrics aren't toy columns. They're the ones analysts actually use: Corsi and Fenwick (shot-attempt differential, the standard possession proxies), expected goals, time-on-ice sliced by strength state (5v5, power play, penalty kill), zone classification, and rink x/y coordinates for shot maps.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/ss_catalog_gold.png" alt="The gold star schema in Catalog Explorer"><figcaption><em>The gold layer in Unity Catalog: five dimensions, four facts, and the pre-aggregated views, all governed and discoverable.</em></figcaption></figure>
+<h2>Governance: comments, tags, lineage</h2>
+<p>The fifth notebook does the unglamorous work that makes a data product usable. It writes table and column comments (so <code>x_coord</code> says "SportLogiq rink coordinate, center-ice = 0"), applies tags (<code>domain=hockey_analytics</code>, <code>tier=gold</code>), and confirms column-level lineage from bronze through to gold.</p>
+<p>That metadata isn't bureaucracy. Comments are what Genie reads to understand your schema, and lineage is what lets you trace a number on the dashboard back to the exact API field it came from.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/ss_fact_table.png" alt="A gold fact table, governed in Unity Catalog"><figcaption><em><code>fact_game_events</code> with its typed columns, comments, and RELY keys. The same metadata that renders the ERD is what Genie reads to join correctly.</em></figcaption></figure>
+<h2>Consume, part one: a dashboard as code</h2>
+<p>The sixth notebook builds an AI/BI dashboard entirely in JSON: nine widgets over six datasets. KPI counters for games, shots, goals, and shooting percentage. A standings bar. A season-leaders table. A shot-map heatmap. The whole dashboard is defined in the notebook and updated in place, so it lives in version control like everything else.</p>
+<pre><code>datasets = [{
+    "name": "kpi_summary",
+    "queryLines": [
+        "SELECT COUNT(DISTINCT game_id) AS games,",
+        "       SUM(CASE WHEN is_goal THEN 1 ELSE 0 END) AS goals",
+        f"FROM {G}.fact_game_events"]
+}]</code></pre>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/ss_dashboard.png" alt="The SportLogiq Lakeview dashboard"><figcaption><em>The AI/BI dashboard, defined entirely as JSON in notebook 06: KPI counters, a conference-colored standings bar, a shot-map heatmap, and more.</em></figcaption></figure>
+<h2>Consume, part two: a Genie space that speaks hockey</h2>
+<p>The last notebook is the one that makes people lean in. It creates a Genie space over the gold tables and feeds it a block of hockey-specific instructions, so it understands the vocabulary without the user having to.</p>
+<pre><code>"instructions": [
+  "When users say 'team' or use a 3-letter code (BOS, TOR), match dim_team.team_shorthand.",
+  "A 'shot' = is_shot = TRUE. A 'goal' = is_goal = TRUE. Shooting % = goals / shots.",
+  "Strength state (5v5, 5v4, 4v5) lives on silver_player_toi.strength.",
+  "Period structure: 1-3 regulation, 4 OT, 5 shootout."
+]</code></pre>
+<p>Now, a coach types "top power-play time-on-ice players this season" and gets a table back, no SQL written. Genie knows that "power play" means a 5v4 strength state, that time-on-ice lives in the shifts data, and how to get there, because the instructions and the RELY constraints told it.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/sportslogiq-demo/blog/ss_genie_ui.png" alt="Genie answering a hockey question in plain English"><figcaption><em>Ask "which teams have scored the most goals?" in plain English; Genie writes the SQL, runs it, and charts the answer. No query language required.</em></figcaption></figure>
+<h2>The point</h2>
+<p>The flashy part of this demo is Genie answering hockey questions in plain English. The valuable part is everything underneath it.</p>
+<p>A vendor API turned into governed, typed, lineage-tracked tables. Idempotent ingestion that resumes rather than restarts. A star schema that a dashboard and an LLM can both consume. None of that is hockey-specific. Point the first notebook at Genius Sports, Statcast, your ticketing system, or your CRM, and the rest of the pattern holds. The medallion, the governance, and the natural-language layer don't change.</p>
+<p>That's what a data product looks like. The API was always there. This is how you make it answer questions.</p>
+<hr>
+<p><em>The full demo (eight notebooks, runnable locally via <a href="https://docs.databricks.com/en/dev-tools/databricks-connect/index.html">Databricks Connect</a> or in-workspace) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/sportslogiq-demo">sportslogiq-demo</a> directory. The demo runs against the SportLogiq API; all data shown here is synthetic, generated by the included generator for demonstration purposes.</em></p>
+</article></body></html>

@@ -1,0 +1,20 @@
+block-beta
+    columns 3
+    GEN["Generate NFL<br/>Combine data<br/>Faker · 300 rows"]:1
+    DELTA[("combine_results<br/>Delta table")]:1
+    SHARE["UC Share<br/>+ open recipient"]:1
+    PROF["share_profile.json"]:1
+    SP1:1
+    BRIDGE["Delta Sharing<br/>open REST protocol"]:1
+
+    GEN --> DELTA
+    DELTA --> SHARE
+    SHARE --> PROF
+    PROF --> BRIDGE
+
+    style GEN    fill:#FF6B35,stroke:#E55A25,stroke-width:2px,color:#FFFFFF
+    style DELTA  fill:#1E2D40,stroke:#FF6B35,stroke-width:3px,color:#FFFFFF
+    style SHARE  fill:#5B3FA6,stroke:#4A30A0,stroke-width:2px,color:#FFFFFF
+    style PROF   fill:#2D3F55,stroke:#4A5F7A,stroke-width:2px,color:#FFFFFF
+    style BRIDGE fill:#1E7E6B,stroke:#166058,stroke-width:2px,color:#FFFFFF
+    style SP1    fill:transparent,stroke:transparent

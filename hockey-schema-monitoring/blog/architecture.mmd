@@ -1,0 +1,89 @@
+flowchart LR
+    %% ─── SOURCE ───────────────────────────────────────────────────────────────────
+    subgraph SRC["  SOURCE  "]
+        API["NHL play-by-play API<br/>(v1 · 10 keys)"]
+    end
+
+    %% ─── BRONZE ───────────────────────────────────────────────────────────────────
+    subgraph BRZ["  BRONZE  "]
+        direction TB
+        INGEST["parse_json<br/>schema-on-read"]
+        BRAW[("bronze.plays_raw<br/>VARIANT payload")]
+        INGEST --> BRAW
+    end
+
+    %% ─── SILVER ───────────────────────────────────────────────────────────────────
+    subgraph SLV["  SILVER  "]
+        direction TB
+        PROJ["Typed projection<br/>gated by allow-list<br/>(known_payload_keys)"]
+        SPLAYS[("silver.plays<br/>typed columns")]
+        PROJ --> SPLAYS
+    end
+
+    %% ─── MONITOR ──────────────────────────────────────────────────────────────────
+    subgraph MON["  MONITOR  "]
+        direction TB
+        DRIFT["Drift detector view<br/>variant_explode +<br/>LEFT ANTI JOIN vs allow-list"]
+        LHM["Lakehouse Monitoring<br/>column profiles +<br/>distribution drift"]
+        ALERT["DBSQL Alert<br/>(fires on unknown keys)"]
+        DRIFT --> ALERT
+    end
+
+    %% ─── UNITY CATALOG ────────────────────────────────────────────────────────────
+    subgraph UC["  UNITY CATALOG  "]
+        CAT["Catalog · Schema · Table lineage<br/>Data governance &amp; access control"]
+    end
+
+    %% ─── MAIN PIPELINE EDGES ──────────────────────────────────────────────────────
+    API -- "raw events" --> INGEST
+    BRAW -- "read raw" --> PROJ
+    BRAW -- "scan keys" --> DRIFT
+    SPLAYS -- "profile" --> LHM
+    BRAW -. "lineage" .-> CAT
+    SPLAYS -. "lineage" .-> CAT
+
+    %% ─── DRIFT EVENT ──────────────────────────────────────────────────────────────
+    subgraph EVT["  ⚡  API v2 DRIFT EVENT  ⚡  "]
+        direction LR
+        V2["API ships v2<br/>+expected_goals<br/>+shot_quality_index<br/>+puck_speed_mph"]
+        ABSORB["Bronze absorbs<br/>zero downtime"]
+        FIRE["Drift detector<br/>lights up — 3 new keys"]
+        RESOLVE["Resolve: append to allow-list<br/>mergeSchema widens silver"]
+        V2 --> ABSORB --> FIRE --> RESOLVE
+    end
+
+    ABSORB -. "v2 payload" .-> BRAW
+    FIRE --> ALERT
+
+    %% ─── NODE STYLES ──────────────────────────────────────────────────────────────
+    classDef source    fill:#FF6B35,color:#fff,stroke:#d95a25,stroke-width:2px,font-weight:bold
+    classDef ingest    fill:#0194E2,color:#fff,stroke:#0178bb,stroke-width:2px
+    classDef delta     fill:#1E2D40,color:#FF6B35,stroke:#FF6B35,stroke-width:2.5px,font-weight:bold
+    classDef process   fill:#2D3F55,color:#e8edf2,stroke:#4a6080,stroke-width:1.5px
+    classDef monitor   fill:#1E7E6B,color:#fff,stroke:#126b59,stroke-width:2px
+    classDef alertcls  fill:#1E7E6B,color:#fff,stroke:#126b59,stroke-width:2.5px,font-weight:bold
+    classDef uc        fill:#5B3FA6,color:#fff,stroke:#4a3388,stroke-width:2px
+    classDef driftsrc  fill:#CC3311,color:#fff,stroke:#992200,stroke-width:3px,font-weight:bold
+    classDef driftmid  fill:#E05020,color:#fff,stroke:#b03010,stroke-width:2.5px
+    classDef driftfire fill:#E05020,color:#fff,stroke:#b03010,stroke-width:2.5px,font-weight:bold
+    classDef driftfix  fill:#FF8C42,color:#1E2D40,stroke:#cc6a20,stroke-width:2.5px,font-weight:bold
+
+    class API source
+    class INGEST ingest
+    class BRAW,SPLAYS delta
+    class PROJ process
+    class DRIFT,LHM monitor
+    class ALERT alertcls
+    class CAT uc
+    class V2 driftsrc
+    class ABSORB driftmid
+    class FIRE driftfire
+    class RESOLVE driftfix
+
+    %% ─── SUBGRAPH STYLES ──────────────────────────────────────────────────────────
+    style SRC  fill:#fff4ef,stroke:#FF6B35,stroke-width:2px,color:#1E2D40,font-weight:bold
+    style BRZ  fill:#eef4fa,stroke:#0194E2,stroke-width:2px,color:#1E2D40,font-weight:bold
+    style SLV  fill:#f0f4f8,stroke:#2D3F55,stroke-width:2px,color:#1E2D40,font-weight:bold
+    style MON  fill:#edf7f5,stroke:#1E7E6B,stroke-width:2px,color:#1E2D40,font-weight:bold
+    style UC   fill:#f5f0ff,stroke:#5B3FA6,stroke-width:2px,color:#1E2D40,font-weight:bold
+    style EVT  fill:#fff0ec,stroke:#CC3311,stroke-width:3px,stroke-dasharray:8 4,color:#CC3311,font-weight:bold

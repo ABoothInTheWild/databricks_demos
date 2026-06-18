@@ -1,0 +1,83 @@
+/* ── Global background & text ─────────────────────────────────────── */
+.mermaid, svg {
+  background: #ffffff !important;
+}
+
+/* ── Subgraph (cluster) containers ───────────────────────────────── */
+.cluster rect {
+  rx: 8px !important;
+  ry: 8px !important;
+  stroke-width: 2px !important;
+}
+
+.cluster#ING rect {
+  fill: #0d1e30 !important;
+  stroke: #0194E2 !important;
+}
+.cluster#ING .cluster-label {
+  fill: #0194E2 !important;
+  font-weight: bold !important;
+}
+
+.cluster#BRONZE rect {
+  fill: #0d1e30 !important;
+  stroke: #FF6B35 !important;
+}
+.cluster#BRONZE .cluster-label {
+  fill: #FF6B35 !important;
+  font-weight: bold !important;
+}
+
+.cluster#SILVER rect {
+  fill: #0d1e30 !important;
+  stroke: #aaaaaa !important;
+}
+.cluster#SILVER .cluster-label {
+  fill: #cccccc !important;
+  font-weight: bold !important;
+}
+
+.cluster#GOLD rect {
+  fill: #0d1e30 !important;
+  stroke: #FF6B35 !important;
+}
+.cluster#GOLD .cluster-label {
+  fill: #FF6B35 !important;
+  font-weight: bold !important;
+}
+
+.cluster#GOVERN > rect {
+  fill: #2a1a4a !important;
+  stroke: #5B3FA6 !important;
+  stroke-width: 2px !important;
+}
+.cluster#GOVERN .cluster-label {
+  fill: #b89af7 !important;
+  font-weight: bold !important;
+}
+
+.cluster#CONSUME > rect {
+  fill: #0a1f1c !important;
+  stroke: #1E7E6B !important;
+  stroke-width: 2px !important;
+}
+.cluster#CONSUME .cluster-label {
+  fill: #2ec4a0 !important;
+  font-weight: bold !important;
+}
+
+/* ── Edge arrows ─────────────────────────────────────────────────── */
+.edgePath .path {
+  stroke: #FF6B35 !important;
+  stroke-width: 2px !important;
+}
+marker path {
+  fill: #FF6B35 !important;
+  stroke: #FF6B35 !important;
+}
+
+/* ── Node label text ─────────────────────────────────────────────── */
+.node .label, .nodeLabel {
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}

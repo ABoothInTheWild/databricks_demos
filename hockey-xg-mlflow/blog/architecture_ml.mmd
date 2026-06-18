@@ -1,0 +1,51 @@
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#2D3F55',
+  'primaryTextColor': '#FFFFFF',
+  'primaryBorderColor': '#FF6B35',
+  'lineColor': '#7A8FA6',
+  'secondaryColor': '#1E2D40',
+  'tertiaryColor': '#1E2D40',
+  'background': '#FFFFFF',
+  'mainBkg': '#2D3F55',
+  'nodeBorder': '#FF6B35',
+  'clusterBkg': '#F4F6F8',
+  'titleColor': '#1E2D40',
+  'edgeLabelBackground': '#FFFFFF',
+  'fontFamily': 'Helvetica, Arial, sans-serif',
+  'fontSize': '15px'
+}}}%%
+flowchart TD
+    FEAT[("<b>shots_features</b><br/>Delta Lake")]
+    TRAIN["<b>Train 3 Models</b><br/>LogReg · RandomForest · XGBoost<br/>+ MLflow tracking"]
+    CHAMP["<b>Pick Champion</b><br/>by log-loss"]
+    UC["<b>UC Model Registry</b><br/>@champion / @challenger"]
+
+    BATCH["<b>Batch Inference</b><br/>load @champion"]
+    SERVE["<b>Model Serving</b><br/>scale-to-zero endpoint"]
+
+    PRED[("<b>shot_predictions</b><br/>Delta Lake")]
+    INFT[("<b>inference table</b><br/>Delta Lake")]
+
+    MON["<b>Lakehouse Monitoring</b><br/>drift by shot_type<br/>strength_state"]
+
+    FEAT --> TRAIN --> CHAMP --> UC
+    UC --> BATCH --> PRED
+    UC --> SERVE --> INFT
+    PRED --> MON
+    INFT --> MON
+
+    classDef delta fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#FFFFFF,rx:6
+    classDef train fill:#0194E2,stroke:#0173B0,color:#FFFFFF,rx:8
+    classDef process fill:#2D3F55,stroke:#4A6080,color:#FFFFFF,rx:8
+    classDef uc fill:#5B3FA6,stroke:#412D7A,color:#FFFFFF,rx:8
+    classDef batch fill:#7C3AED,stroke:#5B29C9,color:#FFFFFF,rx:8
+    classDef serve fill:#1E7E6B,stroke:#155A4C,color:#FFFFFF,rx:8
+    classDef monitor fill:#2D3F55,stroke:#FF6B35,stroke-width:2px,color:#FFFFFF,rx:8
+
+    class FEAT,PRED,INFT delta
+    class TRAIN train
+    class CHAMP process
+    class UC uc
+    class BATCH batch
+    class SERVE serve
+    class MON monitor

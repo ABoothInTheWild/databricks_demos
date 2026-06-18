@@ -1,0 +1,96 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#2D3F55",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#FF6B35",
+    "lineColor": "#64748B",
+    "secondaryColor": "#1E2D40",
+    "tertiaryColor": "#F1F5F9",
+    "background": "#FFFFFF",
+    "mainBkg": "#2D3F55",
+    "nodeBorder": "#FF6B35",
+    "clusterBkg": "#F1F5F9",
+    "clusterBorder": "#CBD5E1",
+    "titleColor": "#1E2D40",
+    "edgeLabelBackground": "#F8FAFC",
+    "fontFamily": "ui-sans-serif, system-ui, sans-serif"
+  }
+}}%%
+flowchart LR
+  subgraph DATA["DATA"]
+    direction TB
+    D1["Synthetic shots<br/>(50k events)"]
+    D2[("shots_raw")]
+    D1 --> D2
+  end
+
+  subgraph FEATURES["FEATURES"]
+    direction TB
+    F1[("shots_raw")]
+    F2["Feature engineering<br/>distance · angle<br/>shot type · strength<br/>rebound flag"]
+    F3[("shots_features")]
+    F1 --> F2 --> F3
+  end
+
+  subgraph TRAIN["TRAIN — MLflow"]
+    direction TB
+    T1[("shots_features")]
+    T2["Train 3 models<br/>LogReg · RandomForest<br/>XGBoost"]
+    T3["MLflow Tracking<br/>params · metrics<br/>ROC · calibration"]
+    T1 --> T2 --> T3
+  end
+
+  subgraph GOVERN["GOVERN — Unity Catalog"]
+    direction TB
+    G1["Pick champion<br/>by log-loss"]
+    G2["UC Model Registry<br/>@champion · @challenger"]
+    G1 --> G2
+  end
+
+  subgraph SERVE["SERVE"]
+    direction TB
+    S1["Model Serving endpoint<br/>(scale-to-zero)"]
+    S2[("Inference table<br/>auto-captured payloads")]
+    S1 --> S2
+  end
+
+  subgraph MONITOR["MONITOR"]
+    direction TB
+    M1["Lakehouse Monitoring<br/>(InferenceLog)"]
+    M2["Drift detection<br/>sliced by shot_type<br/>& strength_state"]
+    M1 --> M2
+  end
+
+  subgraph BATCH["BATCH INFERENCE"]
+    direction TB
+    B1["Batch inference"]
+    B2[("shot_predictions<br/>Delta table")]
+    B1 --> B2
+  end
+
+  D2 --> F1
+  F3 --> T1
+  T3 --> G1
+  G2 --> S1
+  S2 --> M1
+  G2 -->|"load @champion alias"| B1
+  B2 --> M1
+
+  classDef source fill:#FF6B35,stroke:#FF6B35,color:#FFFFFF
+  classDef delta fill:#1E2D40,stroke:#FF6B35,color:#FFFFFF
+  classDef process fill:#2D3F55,stroke:#2D3F55,color:#FFFFFF
+  classDef mlflow fill:#0194E2,stroke:#0194E2,color:#FFFFFF
+  classDef uc fill:#5B3FA6,stroke:#5B3FA6,color:#FFFFFF
+  classDef serve fill:#1E7E6B,stroke:#1E7E6B,color:#FFFFFF
+  classDef monitor fill:#2D3F55,stroke:#FF6B35,color:#FFFFFF
+  classDef batch fill:#7C3AED,stroke:#7C3AED,color:#FFFFFF
+
+  class D1 source
+  class D2,F1,F3,T1,S2,B2 delta
+  class F2 process
+  class T2,T3 mlflow
+  class G1,G2 uc
+  class S1 serve
+  class M1,M2 monitor
+  class B1 batch

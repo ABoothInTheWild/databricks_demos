@@ -1,0 +1,18 @@
+block-beta
+    columns 2
+    PROF["share_profile.json"]:1
+    LOAD["delta-sharing load_as_pandas()"]:1
+    DF["pandas DataFrame"]:1
+    DUCK["DuckDB in-process SQL"]:1
+    OUT["combine_summary.parquet"]:2
+
+    PROF --> LOAD
+    LOAD --> DF
+    DF --> DUCK
+    DUCK --> OUT
+
+    style PROF  fill:#2D3F55,stroke:#4A5F7A,stroke-width:2px,color:#FFFFFF
+    style LOAD  fill:#7C3AED,stroke:#6D28D9,stroke-width:2px,color:#FFFFFF
+    style DF    fill:#7C3AED,stroke:#6D28D9,stroke-width:2px,color:#FFFFFF
+    style DUCK  fill:#7C3AED,stroke:#6D28D9,stroke-width:2px,color:#FFFFFF
+    style OUT   fill:#2D3F55,stroke:#4A5F7A,stroke-width:2px,color:#FFFFFF

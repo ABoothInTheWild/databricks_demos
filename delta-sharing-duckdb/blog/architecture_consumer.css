@@ -1,0 +1,12 @@
+#my-svg #my-svg-PROF span, #my-svg #my-svg-PROF p,
+#my-svg #my-svg-LOAD span, #my-svg #my-svg-LOAD p,
+#my-svg #my-svg-DF span,   #my-svg #my-svg-DF p,
+#my-svg #my-svg-DUCK span, #my-svg #my-svg-DUCK p,
+#my-svg #my-svg-OUT span,  #my-svg #my-svg-OUT p {
+  color: #FFFFFF !important;
+  fill: #FFFFFF !important;
+}
+.nodeLabel {
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+  font-size: 15px !important;
+}

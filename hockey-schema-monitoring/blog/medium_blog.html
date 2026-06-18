@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catch Schema Drift Before It Breaks You: VARIANT, a Drift Detector, and Alerts on Databricks</title>
+<meta name="description" content="An upstream API adds three fields. Your bronze layer shrugs, a detector lights up, an alert fires, and silver widens in place. No 2 a.m. page.">
+<meta name="author" content="Alexander Booth">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Catch Schema Drift Before It Breaks You: VARIANT, a Drift Detector, and Alerts on Databricks">
+<meta property="og:description" content="An upstream API adds three fields. Your bronze layer shrugs, a detector lights up, an alert fires, and silver widens in place. No 2 a.m. page.">
+<meta property="og:url" content="https://aboothinthewild.github.io/databricks_demos/hockey-schema-monitoring/blog/medium_blog.html">
+<meta property="article:published_time" content="2026-06-17T00:00:00Z">
+<meta property="article:author" content="Alexander Booth">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Catch Schema Drift Before It Breaks You: VARIANT, a Drift Detector, and Alerts on Databricks","description":"An upstream API adds three fields. Your bronze layer shrugs, a detector lights up, an alert fires, and silver widens in place. No 2 a.m. page.","author":{"@type":"Person","name":"Alexander Booth"},"datePublished":"2026-06-17"}
+</script>
+<style>body{max-width:720px;margin:40px auto;padding:0 16px;font:18px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#222}pre{background:#f6f8fa;padding:14px;border-radius:6px;overflow:auto;font-size:14px}code{font-family:SFMono-Regular,Consolas,monospace}pre code{background:none}:not(pre)>code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:.9em}figure{margin:24px 0;text-align:center}img{max-width:100%;height:auto;border:1px solid #eee;border-radius:6px}figcaption{color:#666;font-size:14px;margin-top:8px}h1{font-size:30px;line-height:1.25}h2{font-size:23px;margin-top:36px}blockquote{border-left:3px solid #ddd;margin:0;padding-left:16px;color:#555}hr{border:none;border-top:1px solid #ddd;margin:36px 0}</style>
+</head><body><article>
+<header><h1>Catch Schema Drift Before It Breaks You: VARIANT, a Drift Detector, and Alerts on Databricks</h1><p><em>An upstream API adds three fields. Your bronze layer shrugs, a detector lights up, an alert fires, and silver widens in place. No 2 a.m. page.</em></p><p>By <a href="https://medium.com/@aboothinthewild" rel="author">Alexander Booth</a></p></header>
+<hr>
+<p>Here is the failure every data engineer has lived through. An upstream API quietly changes. A new field appears, or an old one gets renamed. Nobody told you. Your strict pipeline either crashes at 2 a.m. or, worse, silently drops new data and keeps running as if nothing happened. By the time anyone notices, a dashboard has been wrong for a week, and debugging starts from a stack trace.</p>
+<p>This demo builds the opposite of that. A pipeline that absorbs the change, tells you exactly what changed, and gives you a one-step path to adopt it. The example feed is NHL play-by-play, but the pattern is the point, and it works for any source you don't control.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-schema-monitoring/blog/architecture.png" alt="Architecture"></figure>
+<h2>Bronze that can't break: VARIANT</h2>
+<p>The foundation is a single design choice. Bronze stores the raw payload as a <a href="https://docs.databricks.com/en/semi-structured/variant.html"><code>VARIANT</code></a> column instead of a fixed schema.</p>
+<pre><code>df = (spark.createDataFrame(rows, schema=schema)
+        .withColumn("ingest_ts", F.current_timestamp())
+        .withColumn("payload",   F.expr("parse_json(payload_json)")))
+df.write.mode("overwrite").option("overwriteSchema","true").saveAsTable(BRONZE_TABLE)</code></pre>
+<p>VARIANT is schema-on-read. The API can hand you 10 fields today and 13 tomorrow, and bronze ingests both without a code change and without dropping anything. That's the whole reason ingestion never breaks: bronze made no promises about shape.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-schema-monitoring/blog/ss_bronze_variant.png" alt="The VARIANT bronze table in Catalog Explorer"><figcaption><em>The bronze table stores the raw API payload as a single VARIANT column. New fields just slip into it; the schema never changes.</em></figcaption></figure>
+<h2>Silver: typed, and deliberately picky</h2>
+<p>Bronze is permissive. Silver is the opposite, on purpose. It projects only the fields it has been told about, pulled from the VARIANT via dot-path and cast to real types.</p>
+<pre><code>SELECT
+    payload:game_id::string    AS game_id,
+    payload:period::int        AS period,
+    payload:event_type::string AS event_type,
+    payload:x_coord::double    AS x_coord
+FROM bronze.plays_raw</code></pre>
+<p>The list of fields silver is allowed to project lives in a table, <code>known_payload_keys</code>. Ten keys to start. Anything not on that list does not become a column. That's the contract: bronze takes everything, silver takes only what's been reviewed.</p>
+<h2>The detector: what changed, exactly</h2>
+<p>This is the clever bit, and it's one query. Walk every top-level key in every payload with <code>variant_explode</code>, then anti-join against the allow-list. Whatever's left is new.</p>
+<pre><code>WITH exploded AS (
+    SELECT ingest_ts, kv.key AS payload_key
+    FROM bronze.plays_raw, LATERAL variant_explode(payload) AS kv
+)
+SELECT payload_key, COUNT(*) AS sightings,
+       MIN(ingest_ts) AS first_seen, MAX(ingest_ts) AS last_seen
+FROM exploded e
+LEFT ANTI JOIN known_payload_keys k ON k.key = e.payload_key
+GROUP BY payload_key</code></pre>
+<p>No parsing, no schema inference job, no guesswork. The view returns one row per unknown key, including how many times it's been seen and when it first appeared. With v1 data, it returns nothing.</p>
+<h2>The alarm: a DBSQL Alert</h2>
+<p>Point a <a href="https://docs.databricks.com/en/sql/user/alerts/index.html">DBSQL Alert</a> at that view with a condition of "rows &gt; 0" and a five-minute schedule. The moment an unknown key appears, the alert fires to email, Slack, or PagerDuty.</p>
+<p>There's also a second, complementary signal: a <a href="https://docs.databricks.com/en/lakehouse-monitoring/index.html">Lakehouse Monitor</a> on <code>silver.plays</code> in profile mode. The drift detector catches <em>new keys</em>. The monitor catches <em>distribution shifts in existing columns</em>, the case where a field doesn't change shape but its values go sideways. Two detectors, two different blind spots covered.</p>
+<h2>The event: the API ships v2</h2>
+<p>Now the demo does the thing that usually ruins a Friday. A new batch of events arrives tagged <code>v2</code>, carrying three fields that didn't exist before.</p>
+<pre><code>def make_play_v2(n):
+    return { **v1_keys(n),
+        "expected_goals":     round(rng.uniform(0.01, 0.45), 3),
+        "shot_quality_index": round(rng.uniform(0.0, 1.0), 3),
+        "puck_speed_mph":     round(rng.uniform(40.0, 105.0), 1) }</code></pre>
+<p>Watch what happens. Bronze ingests all 400 v2 events without complaint, because VARIANT doesn't care. Silver keeps running on its ten known keys, unaffected. And the drift detector immediately returns three rows: <code>expected_goals</code>, <code>shot_quality_index</code>, <code>puck_speed_mph</code>, each seen 400 times. The alert fires. You know within minutes, not after a dashboard rots.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-schema-monitoring/blog/drift_detector_result.png" alt="The drift detector lighting up"><figcaption><em>The drift detector lights up the instant the v2 batch lands: three unknown keys, 400 sightings each. A DBSQL Alert on this view (condition: rows &gt; 0) emails the team within minutes.</em></figcaption></figure>
+<h2>The fix: widen on purpose, in place</h2>
+<p>The recovery is a two-step decision, not a fire drill. Add the three reviewed keys to the allow-list, then re-run silver. <a href="https://docs.databricks.com/en/delta/index.html">Delta</a>'s <code>mergeSchema</code> widens the table in place: old rows get NULL for the new columns, new rows get values, nothing is rewritten, and nothing downstream breaks.</p>
+<pre><code>NEW_KEYS = ["expected_goals", "shot_quality_index", "puck_speed_mph"]
+(spark.createDataFrame([Row(key=k) for k in NEW_KEYS])
+      .write.mode("append").saveAsTable(KNOWN_KEYS_TBL))
+
+silver.write.mode("overwrite").option("overwriteSchema","true").saveAsTable(SILVER_TABLE)</code></pre>
+<p>Run a coverage check, and the story is clean: the v1 rows show 0% population on the new columns, the v2 rows show 100%. The drift detector goes back to empty. The alert clears. Silver is wider, history is intact, and you adopted the change on your own schedule.</p>
+<figure><img src="https://aboothinthewild.github.io/databricks_demos/hockey-schema-monitoring/blog/ss_silver_schema.png" alt="The typed silver schema in Catalog Explorer"><figcaption><em>Silver projects only the reviewed keys into typed columns. After the allow-list update, <code>mergeSchema</code> widens it in place to absorb the three new fields.</em></figcaption></figure>
+<h2>The point</h2>
+<p>The trick isn't any one feature. It's three of them covering each other.</p>
+<p>VARIANT means ingestion can't break on a shape change. The <code>variant_explode</code> detector means you always know precisely what changed and when. The DBSQL Alert means you hear about it in minutes. And <code>mergeSchema</code> means adopting the change is a deliberate, in-place edit rather than a rebuild.</p>
+<p>Schema drift is not an exotic problem. It's the most ordinary thing that goes wrong with data you don't own. This is how you make it a notification instead of an outage.</p>
+<hr>
+<p><em>The full demo (six notebooks: four to set up, two to run live) lives in the <a href="https://github.com/ABoothInTheWild/databricks_demos/tree/main/hockey-schema-monitoring">hockey-schema-monitoring</a> directory. The play-by-play events are entirely synthetic and generated locally for demonstration.</em></p>
+</article></body></html>

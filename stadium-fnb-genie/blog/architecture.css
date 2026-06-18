@@ -1,0 +1,38 @@
+/* Data generation source node */
+.node#GEN rect, .node#GEN polygon, .node#GEN circle, .node#GEN ellipse {
+  fill: #FF6B35 !important;
+  stroke: #cc5228 !important;
+}
+
+/* Unity Catalog subgraph */
+.cluster#UC > rect, .cluster#UC rect {
+  fill: #162030 !important;
+  stroke: #FF6B35 !important;
+  stroke-width: 2.5px !important;
+}
+.cluster#UC .cluster-label {
+  fill: #FF6B35 !important;
+  font-weight: bold !important;
+}
+
+/* Genie subgraph */
+.cluster#GTUNE > rect, .cluster#GTUNE rect {
+  fill: #2a1a4a !important;
+  stroke: #7C3AED !important;
+  stroke-width: 2.5px !important;
+}
+.cluster#GTUNE .cluster-label {
+  fill: #c4a0ff !important;
+  font-weight: bold !important;
+}
+
+/* Node label sizing */
+.node .label, .nodeLabel {
+  font-size: 15px !important;
+}
+
+/* Edge labels */
+.edgeLabel {
+  background-color: #ffffff !important;
+  font-size: 13px !important;
+}

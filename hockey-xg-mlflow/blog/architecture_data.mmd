@@ -1,0 +1,31 @@
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#2D3F55',
+  'primaryTextColor': '#FFFFFF',
+  'primaryBorderColor': '#FF6B35',
+  'lineColor': '#7A8FA6',
+  'secondaryColor': '#1E2D40',
+  'tertiaryColor': '#1E2D40',
+  'background': '#FFFFFF',
+  'mainBkg': '#2D3F55',
+  'nodeBorder': '#FF6B35',
+  'clusterBkg': '#F4F6F8',
+  'titleColor': '#1E2D40',
+  'edgeLabelBackground': '#FFFFFF',
+  'fontFamily': 'Helvetica, Arial, sans-serif',
+  'fontSize': '15px'
+}}}%%
+flowchart TD
+    SRC["<b>Synthetic Shots</b><br/>50,000 shot events"]
+    RAW[("<b>shots_raw</b><br/>Delta Lake")]
+    FEAT["<b>Feature Engineering</b><br/>distance · angle<br/>shot type · strength state<br/>rebound flag"]
+    GOLD[("<b>shots_features</b><br/>Delta Lake")]
+
+    SRC --> RAW --> FEAT --> GOLD
+
+    classDef source fill:#FF6B35,stroke:#CC5420,color:#FFFFFF,rx:8
+    classDef delta fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#FFFFFF,rx:6
+    classDef process fill:#2D3F55,stroke:#4A6080,color:#FFFFFF,rx:8
+
+    class SRC source
+    class RAW,GOLD delta
+    class FEAT process

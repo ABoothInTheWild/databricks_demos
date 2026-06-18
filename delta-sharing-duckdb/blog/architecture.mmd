@@ -1,0 +1,68 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#2D3F55",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#4A5F7A",
+    "lineColor": "#7A8FA6",
+    "secondaryColor": "#1E2D40",
+    "tertiaryColor": "#F5F7FA",
+    "background": "#FFFFFF",
+    "mainBkg": "#2D3F55",
+    "nodeBorder": "#4A5F7A",
+    "clusterBkg": "#F0F4F8",
+    "clusterBorder": "#CBD5E0",
+    "edgeLabelBackground": "#FFFFFF",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "14px"
+  }
+}}%%
+flowchart TD
+    %% ── PROVIDER subgraph ──────────────────────────────────────────────
+    subgraph PROVIDER["PROVIDER · Databricks"]
+        direction TB
+        GEN["Generate NFL Combine data<br/>(Faker · 300 rows)"]
+        DELTA["nfl_combine.combine_results<br/>Delta table"]
+        SHARE["UC Share + open recipient"]
+        PROF["share_profile.json"]
+
+        GEN --> DELTA
+        DELTA --> SHARE
+        SHARE --> PROF
+    end
+
+    %% ── PROTOCOL bridge ────────────────────────────────────────────────
+    BRIDGE(["Delta Sharing<br/>open REST protocol"])
+
+    %% ── CONSUMER subgraph ──────────────────────────────────────────────
+    subgraph CONSUMER["CONSUMER · local, zero Databricks compute"]
+        direction TB
+        PROF2["share_profile.json"]
+        LOAD["delta-sharing: load_as_pandas()"]
+        DF["pandas DataFrame"]
+        DUCK["DuckDB (in-process SQL)"]
+        OUT["combine_summary.parquet"]
+
+        PROF2 --> LOAD
+        LOAD --> DF
+        DF --> DUCK
+        DUCK --> OUT
+    end
+
+    %% ── Cross-boundary edges ────────────────────────────────────────────
+    PROF --> BRIDGE
+    BRIDGE --> PROF2
+
+    %% ── Node styles ─────────────────────────────────────────────────────
+    style GEN   fill:#FF6B35,stroke:#E55A25,color:#FFFFFF
+    style DELTA fill:#1E2D40,stroke:#FF6B35,stroke-width:2px,color:#FFFFFF
+    style SHARE fill:#5B3FA6,stroke:#4A30A0,color:#FFFFFF
+    style PROF  fill:#2D3F55,stroke:#4A5F7A,color:#FFFFFF
+
+    style BRIDGE fill:#1E7E6B,stroke:#166058,color:#FFFFFF,font-weight:bold
+
+    style PROF2 fill:#2D3F55,stroke:#4A5F7A,color:#FFFFFF
+    style LOAD  fill:#7C3AED,stroke:#6D28D9,color:#FFFFFF
+    style DF    fill:#7C3AED,stroke:#6D28D9,color:#FFFFFF
+    style DUCK  fill:#7C3AED,stroke:#6D28D9,color:#FFFFFF
+    style OUT   fill:#2D3F55,stroke:#4A5F7A,color:#FFFFFF
